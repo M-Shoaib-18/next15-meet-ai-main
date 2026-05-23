@@ -6,9 +6,10 @@ import Image from "next/image";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useRouter } from "next/navigation";
-import { OctagonAlertIcon } from "lucide-react";
 import { FaGithub, FaGoogle } from "react-icons/fa";
 import { zodResolver } from "@hookform/resolvers/zod";
+
+import { MailCheckIcon, OctagonAlertIcon } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth-client";
@@ -23,12 +24,13 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import { passwordSchema } from "@/lib/password";
 
 const formSchema = z.object({
   name: z.string().min(1, { message: "Name is required" }),
-  email: z.string().email(),
-  password: z.string().min(1, { message: "Password is required" }),
-  confirmPassword: z.string().min(1, { message: "Password is required" }),
+  email: z.string().email({ message: "Enter a valid email address" }),
+  password: passwordSchema,
+  confirmPassword: z.string().min(1, { message: "Please confirm your password" }),
 })
 .refine((data) => data.password === data.confirmPassword, {
   message: "Passwords don't match",
@@ -40,6 +42,7 @@ export const SignUpView = () => {
 
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [verifyEmail, setVerifyEmail] = useState<string | null>(null);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -65,11 +68,11 @@ export const SignUpView = () => {
       {
         onSuccess: () => {
           setPending(false);
-          router.push("/");
+          setVerifyEmail(data.email);
         },
         onError: ({ error }) => {
           setPending(false);
-          setError(error.message)
+          setError(error.message);
         },
       }
     );
@@ -96,6 +99,62 @@ export const SignUpView = () => {
       }
     );
   };
+
+  if (verifyEmail) {
+    return (
+      <div className="flex flex-col gap-6">
+        <Card className="overflow-hidden p-0">
+          <CardContent className="grid p-0 md:grid-cols-2">
+            <div className="p-6 md:p-8 flex flex-col gap-6">
+              <div className="flex flex-col items-center text-center gap-3">
+                <MailCheckIcon className="size-10 text-primary" />
+                <h1 className="text-2xl font-bold">Check your inbox</h1>
+                <p className="text-muted-foreground text-balance">
+                  We sent a verification link to{" "}
+                  <span className="font-medium text-foreground">{verifyEmail}</span>.
+                  Click the link to activate your account.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  authClient.sendVerificationEmail(
+                    { email: verifyEmail, callbackURL: "/" },
+                    {
+                      onSuccess: () => setError(null),
+                      onError: ({ error }) => setError(error.message),
+                    }
+                  );
+                }}
+              >
+                Resend verification email
+              </Button>
+              {!!error && (
+                <Alert className="bg-destructive/10 border-none">
+                  <OctagonAlertIcon className="h-4 w-4 !text-destructive" />
+                  <AlertTitle>{error}</AlertTitle>
+                </Alert>
+              )}
+              <div className="text-center text-sm">
+                Wrong email?{" "}
+                <button
+                  className="underline underline-offset-4"
+                  onClick={() => { setVerifyEmail(null); setError(null); }}
+                >
+                  Go back
+                </button>
+              </div>
+            </div>
+            <div className="bg-radial from-sidebar-accent to-sidebar relative hidden md:flex flex-col gap-y-4 items-center justify-center">
+              <Image src="/logo.svg" alt="Meet.AI Logo" width={92} height={92} />
+              <p className="text-2xl font-semibold text-white">Meet.AI</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">

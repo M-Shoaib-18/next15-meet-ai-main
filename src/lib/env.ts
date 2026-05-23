@@ -25,6 +25,9 @@ const serverEnvSchema = z.object({
   // Inngest
   INNGEST_EVENT_KEY: z.string().optional(),
   INNGEST_SIGNING_KEY: z.string().optional(),
+
+  // App
+  BETTER_AUTH_URL: z.string().url().optional(),
 });
 
 const parsed = serverEnvSchema.safeParse(process.env);

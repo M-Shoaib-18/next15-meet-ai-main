@@ -6,6 +6,7 @@ import { db } from "@/db";
 import * as schema from "@/db/schema";
 
 import { polarClient } from "./polar";
+import { sendVerificationEmail } from "./email";
 
 export const auth = betterAuth({
   plugins: [
@@ -33,6 +34,11 @@ export const auth = betterAuth({
   },
   emailAndPassword: {
     enabled: true,
+    minPasswordLength: 8,
+    requireEmailVerification: true,
+    sendVerificationEmail: async ({ user, url }: { user: { email: string; name: string }; url: string }) => {
+      await sendVerificationEmail({ to: user.email, url });
+    },
   },
   database: drizzleAdapter(db, {
     provider: "pg",
