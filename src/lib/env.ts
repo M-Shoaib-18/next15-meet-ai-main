@@ -1,8 +1,22 @@
 import { z } from "zod";
 
+// Coerce empty strings (from .env KEY="") to undefined so optional fields
+// don't fail URL/min-length validation when left blank locally.
+const emptyToUndefined = z.preprocess(
+  (val) => (val === "" ? undefined : val),
+  z.string().optional()
+);
+
 const serverEnvSchema = z.object({
   // Database
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+
+  // Better Auth
+  BETTER_AUTH_SECRET: z.string().min(1, "BETTER_AUTH_SECRET is required"),
+  BETTER_AUTH_URL: z.preprocess(
+    (val) => (val === "" ? undefined : val),
+    z.string().url("BETTER_AUTH_URL must be a valid URL (e.g. http://localhost:3000)").optional()
+  ),
 
   // Auth providers
   GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID is required"),
@@ -23,11 +37,8 @@ const serverEnvSchema = z.object({
   POLAR_ACCESS_TOKEN: z.string().min(1, "POLAR_ACCESS_TOKEN is required"),
 
   // Inngest
-  INNGEST_EVENT_KEY: z.string().optional(),
-  INNGEST_SIGNING_KEY: z.string().optional(),
-
-  // App
-  BETTER_AUTH_URL: z.string().url().optional(),
+  INNGEST_EVENT_KEY: emptyToUndefined,
+  INNGEST_SIGNING_KEY: emptyToUndefined,
 });
 
 const parsed = serverEnvSchema.safeParse(process.env);
