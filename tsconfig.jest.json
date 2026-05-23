@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0",
+    "jsx": "react",
+    "esModuleInterop": true,
+    "types": ["jest", "node"]
+  },
+  "exclude": ["node_modules", ".next"]
+}

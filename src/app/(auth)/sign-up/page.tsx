@@ -1,20 +1,16 @@
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
-import { auth } from "@/lib/auth";
-
+import { getSessionSafe } from "@/lib/session";
 import { SignUpView } from "@/modules/auth/ui/views/sign-up-view";
 
 const Page = async () => {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
+  const session = await getSessionSafe();
 
-  if (!!session) {
+  if (session) {
     redirect("/");
   }
 
-  return <SignUpView />
-}
- 
+  return <SignUpView />;
+};
+
 export default Page;

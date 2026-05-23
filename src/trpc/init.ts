@@ -28,9 +28,12 @@ export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;
 export const baseProcedure = t.procedure;
 export const protectedProcedure = baseProcedure.use(async ({ ctx, next }) => {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
+  let session: Awaited<ReturnType<typeof auth.api.getSession>> | null = null;
+  try {
+    session = await auth.api.getSession({ headers: await headers() });
+  } catch {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Unauthorized" });
+  }
 
   if (!session) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Unauthorized" });
@@ -40,9 +43,16 @@ export const protectedProcedure = baseProcedure.use(async ({ ctx, next }) => {
 });
 export const premiumProcedure = (entity: "meetings" | "agents") =>
   protectedProcedure.use(async ({ ctx, next }) => {
-    const customer = await polarClient.customers.getStateExternal({
-      externalId: ctx.auth.user.id,
-    });
+    // Polar may throw if the user has no customer record yet (e.g. created
+    // before the Polar plugin was active, or sandbox was reset). Treat as free.
+    let customer: Awaited<ReturnType<typeof polarClient.customers.getStateExternal>> | null = null;
+    try {
+      customer = await polarClient.customers.getStateExternal({
+        externalId: ctx.auth.user.id,
+      });
+    } catch {
+      customer = null;
+    }
 
     const [userMeetings] = await db
       .select({
@@ -58,7 +68,7 @@ export const premiumProcedure = (entity: "meetings" | "agents") =>
       .from(agents)
       .where(eq(agents.userId, ctx.auth.user.id));
 
-    const isPremium = customer.activeSubscriptions.length > 0;
+    const isPremium = (customer?.activeSubscriptions.length ?? 0) > 0;
     const isFreeAgentLimitReached = userAgents.count >= MAX_FREE_AGENTS;
     const isFreeMeetingLimitReached = userMeetings.count >= MAX_FREE_MEETINGS;
 

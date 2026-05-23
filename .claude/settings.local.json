@@ -8,7 +8,24 @@
       "Bash(npx npm-check-updates *)",
       "WebSearch",
       "Bash(npm install *)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(npm uninstall *)",
+      "Bash(node -e \"const pkg = require\\('./node_modules/@stream-io/node-sdk/package.json'\\); console.log\\('node-sdk version:', pkg.version\\); console.log\\('peerDeps:', JSON.stringify\\(pkg.peerDependencies, null, 2\\)\\); console.log\\('deps:', JSON.stringify\\(pkg.dependencies, null, 2\\)\\);\")",
+      "Bash(node -e \"const pkg = require\\('./node_modules/@stream-io/openai-realtime-api/package.json'\\); console.log\\('openai-realtime-api version:', pkg.version\\); console.log\\('peerDeps:', JSON.stringify\\(pkg.peerDependencies, null, 2\\)\\); console.log\\('deps:', JSON.stringify\\(pkg.dependencies, null, 2\\)\\);\")",
+      "Bash(node -e \"const pkg = require\\('./node_modules/@stream-io/openai-realtime-api/package.json'\\); console.log\\('main:', pkg.main\\); console.log\\('exports:', JSON.stringify\\(pkg.exports, null, 2\\)\\);\")",
+      "Bash(npm show *)",
+      "Bash(node -e \"const m = require\\('@stream-io/openai-realtime-api'\\); console.log\\('exports:', Object.keys\\(m\\)\\);\")",
+      "Bash(node -e \"const pkg = require\\('./node_modules/@stream-io/openai-realtime-api/dist/index.js'\\); console.log\\(Object.keys\\(pkg\\)\\);\")",
+      "Bash(node -e \"console.log\\(require\\('./node_modules/@stream-io/openai-realtime-api/package.json'\\).version\\)\")",
+      "Bash(node -e \"const d=require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\); const v=JSON.parse\\(d\\); console.log\\('latest 5:', v.slice\\(-5\\).join\\(', '\\)\\);\")",
+      "Bash(node -e \"process.stdin.resume\\(\\); let d=''; process.stdin.on\\('data',c=>d+=c\\); process.stdin.on\\('end',\\(\\)=>{ const v=JSON.parse\\(d\\); console.log\\('all versions:', v.join\\(', '\\)\\); }\\);\")",
+      "Bash(npm pack *)",
+      "Bash(Get-ChildItem -Path \"D:\\\\E Drive\\\\Projects\\\\FYP\\\\next15-meet-ai-main\\\\src\" -Recurse -Include \"*.ts\", \"*.tsx\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(node -e \"const d=require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\); const p=JSON.parse\\(d\\); console.log\\('scripts:', JSON.stringify\\(p.scripts,null,2\\)\\); console.log\\('devDeps test:', Object.keys\\({...p.devDependencies,...p.dependencies}\\).filter\\(k=>k.includes\\('jest'\\)||k.includes\\('vitest'\\)||k.includes\\('test'\\)\\).join\\(', '\\)\\);\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('scripts:', JSON.stringify\\(p.scripts,null,2\\)\\); const all={...p.dependencies,...p.devDependencies}; const test=Object.keys\\(all\\).filter\\(k=>k.includes\\('jest'\\)||k.includes\\('vitest'\\)||k.includes\\('@testing'\\)\\); console.log\\('test deps:', test\\);\")",
+      "Bash(npx jest *)",
+      "Bash(node -e \"const ts = require\\('./node_modules/typescript'\\); console.log\\('TS version:', ts.version\\);\")"
     ]
   }
 }

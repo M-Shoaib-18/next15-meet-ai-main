@@ -17,10 +17,18 @@ import { streamChat } from "@/lib/stream-chat";
 export const meetingsRouter = createTRPCRouter({
   generateChatToken: protectedProcedure.mutation(async ({ ctx }) => {
     const token = streamChat.createToken(ctx.auth.user.id);
-    await streamChat.upsertUser({
-      id: ctx.auth.user.id,
-      role: "admin",
-    });
+    try {
+      await streamChat.upsertUser({
+        id: ctx.auth.user.id,
+        role: "admin",
+      });
+    } catch (err) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to set up chat. Please try again.",
+        cause: err,
+      });
+    }
 
     return token;
   }),
@@ -115,18 +123,26 @@ export const meetingsRouter = createTRPCRouter({
       return transcriptWithSpeakers;
     }),
   generateToken: protectedProcedure.mutation(async ({ ctx }) => {
-    await streamVideo.upsertUsers([
-      {
-        id: ctx.auth.user.id,
-        name: ctx.auth.user.name,
-        role: "admin",
-        image: 
-          ctx.auth.user.image ??
-          generateAvatarUri({ seed: ctx.auth.user.name, variant: "initials" }),
-      },
-    ]);
+    try {
+      await streamVideo.upsertUsers([
+        {
+          id: ctx.auth.user.id,
+          name: ctx.auth.user.name,
+          role: "admin",
+          image:
+            ctx.auth.user.image ??
+            generateAvatarUri({ seed: ctx.auth.user.name, variant: "initials" }),
+        },
+      ]);
+    } catch (err) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to set up video call. Please try again.",
+        cause: err,
+      });
+    }
 
-    const expirationTime = Math.floor(Date.now() / 1000) + 3600; // 1 hour
+    const expirationTime = Math.floor(Date.now() / 1000) + 3600;
     const issuedAt = Math.floor(Date.now() / 1000) - 60;
 
     const token = streamVideo.generateUserToken({
@@ -193,27 +209,35 @@ export const meetingsRouter = createTRPCRouter({
         })
         .returning();
 
-      const call = streamVideo.video.call("default", createdMeeting.id);
-      await call.create({
-        data: {
-          created_by_id: ctx.auth.user.id,
-          custom: {
-            meetingId: createdMeeting.id,
-            meetingName: createdMeeting.name
-          },
-          settings_override: {
-            transcription: {
-              language: "en",
-              mode: "auto-on",
-              closed_caption_mode: "auto-on",
+      try {
+        const call = streamVideo.video.call("default", createdMeeting.id);
+        await call.create({
+          data: {
+            created_by_id: ctx.auth.user.id,
+            custom: {
+              meetingId: createdMeeting.id,
+              meetingName: createdMeeting.name,
             },
-            recording: {
-              mode: "auto-on",
-              quality: "1080p",
+            settings_override: {
+              transcription: {
+                language: "en",
+                mode: "auto-on",
+                closed_caption_mode: "auto-on",
+              },
+              recording: {
+                mode: "auto-on",
+                quality: "1080p",
+              },
             },
           },
-        },
-      });
+        });
+      } catch (err) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to create video call. Please try again.",
+          cause: err,
+        });
+      }
 
       const [existingAgent] = await db
         .select()
@@ -227,17 +251,25 @@ export const meetingsRouter = createTRPCRouter({
         });
       }
 
-      await streamVideo.upsertUsers([
-        {
-          id: existingAgent.id,
-          name: existingAgent.name,
-          role: "user",
-          image: generateAvatarUri({
-            seed: existingAgent.name,
-            variant: "botttsNeutral",
-          }),
-        },
-      ]);
+      try {
+        await streamVideo.upsertUsers([
+          {
+            id: existingAgent.id,
+            name: existingAgent.name,
+            role: "user",
+            image: generateAvatarUri({
+              seed: existingAgent.name,
+              variant: "botttsNeutral",
+            }),
+          },
+        ]);
+      } catch (err) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to set up agent for the call. Please try again.",
+          cause: err,
+        });
+      }
 
       return createdMeeting;
     }),

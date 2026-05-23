@@ -3,6 +3,7 @@ import { eq, count } from "drizzle-orm";
 import { db } from "@/db";
 import { polarClient } from "@/lib/polar";
 import { agents, meetings } from "@/db/schema";
+import { TRPCError } from "@trpc/server";
 import {
   createTRPCRouter,
   protectedProcedure,
@@ -10,9 +11,14 @@ import {
 
 export const premiumRouter = createTRPCRouter({
   getCurrentSubscription: protectedProcedure.query(async ({ ctx }) => {
-    const customer = await polarClient.customers.getStateExternal({
-      externalId: ctx.auth.user.id,
-    });
+    let customer: Awaited<ReturnType<typeof polarClient.customers.getStateExternal>> | null = null;
+    try {
+      customer = await polarClient.customers.getStateExternal({
+        externalId: ctx.auth.user.id,
+      });
+    } catch {
+      return null;
+    }
 
     const subscription = customer.activeSubscriptions[0];
 
@@ -27,22 +33,33 @@ export const premiumRouter = createTRPCRouter({
     return product;
   }),
   getProducts: protectedProcedure.query(async () => {
-    const products = await polarClient.products.list({
-      isArchived: false,
-      isRecurring: true,
-      sorting: ["price_amount"],
-    });
-
-    return products.result.items;
+    try {
+      const products = await polarClient.products.list({
+        isArchived: false,
+        isRecurring: true,
+        sorting: ["price_amount"],
+      });
+      return products.result.items;
+    } catch {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to load products. Please try again later.",
+      });
+    }
   }),
   getFreeUsage: protectedProcedure.query(async ({ ctx }) => {
-    const customer = await polarClient.customers.getStateExternal({
-      externalId: ctx.auth.user.id,
-    });
+    let customer: Awaited<ReturnType<typeof polarClient.customers.getStateExternal>> | null = null;
+    try {
+      customer = await polarClient.customers.getStateExternal({
+        externalId: ctx.auth.user.id,
+      });
+    } catch {
+      customer = null;
+    }
 
-    const subscription = customer.activeSubscriptions[0];
-
-    if (subscription) {
+    // Premium users: no free-usage cap to display
+    const isActiveSubscriber = (customer?.activeSubscriptions.length ?? 0) > 0;
+    if (isActiveSubscriber) {
       return null;
     }
 
@@ -64,5 +81,5 @@ export const premiumRouter = createTRPCRouter({
       meetingCount: userMeetings.count,
       agentCount: userAgents.count,
     };
-  })
+  }),
 });

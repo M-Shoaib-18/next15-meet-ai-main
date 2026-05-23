@@ -1,10 +1,9 @@
 import { Suspense } from "react";
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { ErrorBoundary } from "react-error-boundary";
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
 
-import { auth } from "@/lib/auth";
+import { getSessionSafe } from "@/lib/session";
 import { getQueryClient, trpc } from "@/trpc/server";
 import {
   UpgradeView,
@@ -13,9 +12,7 @@ import {
 } from "@/modules/premium/ui/views/upgrade-view";
 
 const Page = async () => {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
+  const session = await getSessionSafe();
 
   if (!session) {
     redirect("/sign-in");
@@ -24,12 +21,12 @@ const Page = async () => {
   const queryClient = getQueryClient();
   void queryClient.prefetchQuery(
     trpc.premium.getCurrentSubscription.queryOptions(),
-  )
+  );
   void queryClient.prefetchQuery(
     trpc.premium.getProducts.queryOptions(),
-  )
-  
-  return ( 
+  );
+
+  return (
     <HydrationBoundary state={dehydrate(queryClient)}>
       <Suspense fallback={<UpgradeViewLoading />}>
         <ErrorBoundary fallback={<UpgradeViewError />}>
@@ -37,7 +34,7 @@ const Page = async () => {
         </ErrorBoundary>
       </Suspense>
     </HydrationBoundary>
-   );
-}
- 
+  );
+};
+
 export default Page;

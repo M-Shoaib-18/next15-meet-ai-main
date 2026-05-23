@@ -22,9 +22,8 @@ export const CallUI = ({ meetingName }: Props) => {
   };
 
   const handleLeave = () => {
-    if (!call) return;
-
-    call.endCall();
+    // CallControls has already called call.leave() before firing onLeave.
+    // Calling endCall() here would fail (403) for non-host participants.
     setShow("ended");
   };
 

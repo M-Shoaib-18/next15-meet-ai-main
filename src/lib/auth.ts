@@ -9,13 +9,23 @@ import { polarClient } from "./polar";
 import { sendVerificationEmail } from "./email";
 
 export const auth = betterAuth({
-  // baseURL tells Better Auth how to construct verification/callback URLs.
-  // Falls back to the request origin when not set (fine for local dev once
-  // BETTER_AUTH_URL is set to http://localhost:3000 in .env).
   baseURL: env.BETTER_AUTH_URL,
-  // A stable secret is required so that session and verification tokens
-  // remain valid across server restarts.
   secret: env.BETTER_AUTH_SECRET,
+  logger: {
+    // better-auth calls console.error internally before throwing on DB errors.
+    // getSessionSafe() already handles the throw gracefully, so we suppress
+    // the "Failed query" noise that Next.js dev mode forwards to the browser.
+    log(level, message, ...args) {
+      if (
+        level === "error" &&
+        typeof message === "string" &&
+        message.startsWith("Failed query")
+      ) {
+        return;
+      }
+      (console[level as keyof Console] as typeof console.log)?.(message, ...args);
+    },
+  },
   plugins: [
     polar({
       client: polarClient,

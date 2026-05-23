@@ -78,7 +78,7 @@ export const meetingsProcessing = inngest.createFunction(
 
     const summary = await step.run("summarize-transcript", async () => {
       const response = await openaiClient.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
@@ -122,4 +122,3 @@ Example:
     });
   },
 );
-

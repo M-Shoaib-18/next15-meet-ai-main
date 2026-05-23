@@ -1,16 +1,15 @@
 import { Suspense } from "react";
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { ErrorBoundary } from "react-error-boundary";
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
 
-import { auth } from "@/lib/auth";
+import { getSessionSafe } from "@/lib/session";
 import { getQueryClient, trpc } from "@/trpc/server";
 
-import { 
-  MeetingIdView, 
-  MeetingIdViewError, 
-  MeetingIdViewLoading
+import {
+  MeetingIdView,
+  MeetingIdViewError,
+  MeetingIdViewLoading,
 } from "@/modules/meetings/ui/views/meeting-id-view";
 
 interface Props {
@@ -21,10 +20,7 @@ interface Props {
 
 const Page = async ({ params }: Props) => {
   const { meetingId } = await params;
-
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
+  const session = await getSessionSafe();
 
   if (!session) {
     redirect("/sign-in");
@@ -35,7 +31,7 @@ const Page = async ({ params }: Props) => {
     trpc.meetings.getOne.queryOptions({ id: meetingId }),
   );
 
-  return ( 
+  return (
     <HydrationBoundary state={dehydrate(queryClient)}>
       <Suspense fallback={<MeetingIdViewLoading />}>
         <ErrorBoundary fallback={<MeetingIdViewError />}>
@@ -43,7 +39,7 @@ const Page = async ({ params }: Props) => {
         </ErrorBoundary>
       </Suspense>
     </HydrationBoundary>
-   );
-}
- 
+  );
+};
+
 export default Page;
