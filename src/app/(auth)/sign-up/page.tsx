@@ -6,12 +6,8 @@ import { SignUpView } from "@/modules/auth/ui/views/sign-up-view";
 const Page = async () => {
   const session = await getSessionSafe();
 
-  if (session?.user.emailVerified) {
+  if (session) {
     redirect("/");
-  }
-
-  if (session && !session.user.emailVerified) {
-    redirect("/verify-email");
   }
 
   return <SignUpView />;

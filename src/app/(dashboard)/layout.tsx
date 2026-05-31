@@ -16,10 +16,6 @@ const Layout = async ({ children }: Props) => {
     redirect("/sign-in");
   }
 
-  if (!session.user.emailVerified) {
-    redirect("/verify-email");
-  }
-
   return (
     <SidebarProvider>
       <DashboardSidebar />

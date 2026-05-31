@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { pgTable, text, timestamp, boolean, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, pgEnum, integer, bigint } from "drizzle-orm/pg-core";
 
 export const user = pgTable("user", {
   id: text('id').primaryKey(),
@@ -67,6 +67,18 @@ export const meetingStatus = pgEnum("meeting_status", [
   "processing",
   "cancelled"
 ]);
+
+// Backing store for Better Auth's built-in rate limiting (storage: "database").
+// Field names (key, count, lastRequest) must match what better-auth's rate
+// limiter reads/writes; see node_modules/better-auth/dist/api/rate-limiter.
+export const rateLimit = pgTable("rate_limit", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => nanoid()),
+  key: text("key"),
+  count: integer("count"),
+  lastRequest: bigint("last_request", { mode: "number" }),
+});
 
 export const meetings = pgTable("meetings", {
   id: text("id")

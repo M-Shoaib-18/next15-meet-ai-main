@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { polar, checkout, portal, webhooks } from "@polar-sh/better-auth";
 
@@ -6,7 +7,7 @@ import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { env } from "./env";
 import { polarClient } from "./polar";
-import { sendVerificationEmail } from "./email";
+import { isDisposableEmail } from "./disposable-email-domains";
 
 export const auth = betterAuth({
   baseURL: env.BETTER_AUTH_URL,
@@ -55,9 +56,41 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 8,
-    requireEmailVerification: true,
-    sendVerificationEmail: async ({ user, url }: { user: { email: string; name: string }; url: string }) => {
-      await sendVerificationEmail({ to: user.email, url });
+    // Email verification removed in favor of spam protection that needs no
+    // mail provider: rate limiting + disposable-email blocking + a honeypot
+    // field on the sign-up form. Users are signed in immediately after sign-up.
+    requireEmailVerification: false,
+  },
+  // Spam/abuse protection layer 1: rate limiting. Backed by Postgres (the
+  // `rateLimit` table) so the limits hold across serverless instances in
+  // production. Enabled in development too so behavior matches.
+  rateLimit: {
+    enabled: true,
+    storage: "database",
+    window: 60, // default window (seconds) for any non-custom path
+    max: 100, // default max requests per window
+    customRules: {
+      "/sign-up/email": { window: 60, max: 5 },
+      "/sign-in/email": { window: 60, max: 10 },
+      "/forget-password": { window: 60, max: 5 },
+    },
+  },
+  // Spam/abuse protection layer 2: reject obvious disposable email domains
+  // before the user record is created. Throwing APIError surfaces a clean
+  // message to the client.
+  databaseHooks: {
+    user: {
+      create: {
+        before: async (user) => {
+          if (isDisposableEmail(user.email)) {
+            throw new APIError("BAD_REQUEST", {
+              message:
+                "Disposable email addresses are not allowed. Please use a permanent email.",
+            });
+          }
+          return { data: user };
+        },
+      },
     },
   },
   database: drizzleAdapter(db, {

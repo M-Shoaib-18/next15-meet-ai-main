@@ -5,10 +5,23 @@ import { useMutation } from "@tanstack/react-query";
 import { useCall } from "@stream-io/video-react-sdk";
 import { useTRPC } from "@/trpc/client";
 
+// A single live-caption line. While the speaker is mid-utterance `final` is
+// false and `text` grows from streaming deltas; once the utterance ends it is
+// replaced with the authoritative transcript and `final` flips to true.
+export interface CaptionLine {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  final: boolean;
+}
+
 export interface UseOpenAIVoiceResult {
   isSpeaking: boolean;
   isConnected: boolean;
   error: string | null;
+  // Full running conversation (user + agent), in order. The overlay renders
+  // only the active speaker; the transcript side panel renders the whole list.
+  captions: CaptionLine[];
 }
 
 // OpenAI Realtime WebRTC endpoints
@@ -21,6 +34,29 @@ const SPEAKING_THRESHOLD = 8;
 
 // Debounce for persisting the running transcript to the server (ms).
 const TRANSCRIPT_SAVE_DEBOUNCE = 1500;
+
+// Screen-vision: max width (px) and JPEG quality for screenshots sent to the
+// agent. Downscaling keeps image-token cost and latency reasonable while
+// keeping text/code on screen legible.
+const SCREENSHOT_MAX_WIDTH = 1280;
+const SCREENSHOT_JPEG_QUALITY = 0.7;
+
+// Tool the agent calls on-demand when the user asks about what's on their
+// screen. When invoked, our client captures the currently shared screen and
+// attaches it as an image, then asks the model to answer using it. This is
+// purely additive — it rides the existing data channel and never affects the
+// audio / SDP / token path.
+const VIEW_SCREEN_TOOL = {
+  type: "function",
+  name: "view_screen",
+  description:
+    "Capture and look at the user's currently shared screen. Call this WHENEVER " +
+    "the user asks anything about what is on their screen, a screenshot, an image, " +
+    "a diagram, a slide, code, an error message, or any on-screen visual (e.g. " +
+    '"what do you see", "what\'s this error", "read my screen", "look at this"). ' +
+    "Only the user's shared screen is captured.",
+  parameters: { type: "object", properties: {}, required: [] },
+} as const;
 
 type TranscriptItem = { role: "user" | "assistant"; text: string; ts: number };
 
@@ -48,6 +84,54 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
   const [isSpeaking,  setIsSpeaking]  = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [error,       setError]       = useState<string | null>(null);
+  const [captions,    setCaptions]    = useState<CaptionLine[]>([]);
+
+  // ---- Live caption assembly ---- //
+  // We keep the canonical list in a ref (mutated synchronously from the data
+  // channel handler) and mirror it into state for rendering. `agentLineIdRef`
+  // / `userLineIdRef` track the currently-open (streaming) line per speaker so
+  // deltas append to it and the final event replaces it in place.
+  const captionsRef    = useRef<CaptionLine[]>([]);
+  const agentLineIdRef = useRef<string | null>(null);
+  const userLineIdRef  = useRef<string | null>(null);
+  const lineSeqRef     = useRef(0);
+
+  // Append a streaming delta or finalize a caption line for a given speaker.
+  // Pass `finalText` to close the line (replaces any partial with the
+  // authoritative transcript); pass `delta` to extend the open partial line.
+  const applyCaption = useCallback(
+    (role: "user" | "assistant", delta: string | null, finalText: string | null) => {
+      const openIdRef = role === "assistant" ? agentLineIdRef : userLineIdRef;
+      let lines = captionsRef.current;
+
+      if (finalText !== null) {
+        if (openIdRef.current) {
+          lines = lines.map((l) =>
+            l.id === openIdRef.current ? { ...l, text: finalText, final: true } : l,
+          );
+        } else {
+          lines = [...lines, { id: `c${++lineSeqRef.current}`, role, text: finalText, final: true }];
+        }
+        openIdRef.current = null;
+      } else if (delta) {
+        if (openIdRef.current) {
+          lines = lines.map((l) =>
+            l.id === openIdRef.current ? { ...l, text: l.text + delta } : l,
+          );
+        } else {
+          const id = `c${++lineSeqRef.current}`;
+          openIdRef.current = id;
+          lines = [...lines, { id, role, text: delta, final: false }];
+        }
+      } else {
+        return;
+      }
+
+      captionsRef.current = lines;
+      setCaptions(lines);
+    },
+    [],
+  );
 
   const pcRef          = useRef<RTCPeerConnection | null>(null);
   const audioElRef     = useRef<HTMLAudioElement   | null>(null);
@@ -64,6 +148,123 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
   const mixCtxRef      = useRef<AudioContext | null>(null);
   const mixDestRef     = useRef<MediaStreamAudioDestinationNode | null>(null);
   const micFilterUnregRef = useRef<(() => Promise<void>) | null>(null);
+
+  // ---- Screen vision (on-demand "look at my screen" tool) ---- //
+  // De-dupes function-call handling so a single tool call captures once.
+  const processedToolCallsRef = useRef<Set<string>>(new Set());
+
+  // Grab a single downscaled JPEG frame of the user's currently shared screen
+  // (via Stream's screen-share track). Returns a data URL, or null if nothing
+  // is being shared. Uses a throwaway off-DOM <video>+<canvas>; no Stream state
+  // is mutated, so the live call is unaffected.
+  const captureScreenFrame = useCallback(async (): Promise<string | null> => {
+    const call = callRef.current;
+    const stream =
+      call?.screenShare.state.mediaStream ??
+      call?.state.localParticipant?.screenShareStream ??
+      null;
+    if (!stream) return null;
+
+    const track = stream.getVideoTracks()[0];
+    if (!track) return null;
+
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = new MediaStream([track]);
+
+    try {
+      await video.play().catch(() => {});
+      // Wait for the first frame's dimensions if not ready yet.
+      if (!video.videoWidth) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 600);
+          video.onloadeddata = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+      }
+
+      const vw = video.videoWidth || 1280;
+      const vh = video.videoHeight || 720;
+      const scale = Math.min(1, SCREENSHOT_MAX_WIDTH / vw);
+
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(vw * scale));
+      canvas.height = Math.max(1, Math.round(vh * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/jpeg", SCREENSHOT_JPEG_QUALITY);
+    } catch {
+      return null;
+    } finally {
+      video.pause();
+      video.srcObject = null;
+    }
+  }, []);
+
+  // Respond to the agent's `view_screen` tool call: attach a screenshot of the
+  // shared screen (or tell the agent nothing is shared) and ask it to answer.
+  const handleViewScreen = useCallback(
+    async (callId: string) => {
+      const dc = dcRef.current;
+      if (!dc || dc.readyState !== "open") return;
+
+      const send = (obj: unknown) => {
+        try {
+          dc.send(JSON.stringify(obj));
+        } catch {
+          /* channel closing — ignore */
+        }
+      };
+
+      const dataUrl = await captureScreenFrame();
+
+      if (!dataUrl) {
+        // Nothing shared — satisfy the tool call and let the model ask the user
+        // to start sharing their screen.
+        send({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify({
+              status: "no_screen",
+              message:
+                "No screen is currently being shared. Ask the user to click the " +
+                "screen-share button, then try again.",
+            }),
+          },
+        });
+        send({ type: "response.create" });
+        return;
+      }
+
+      // 1) Satisfy the tool call.
+      send({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify({ status: "ok", message: "Screenshot attached below." }),
+        },
+      });
+      // 2) Attach the screenshot as an image the model can actually see.
+      send({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_image", image_url: dataUrl }],
+        },
+      });
+      // 3) Ask the model to answer using the screenshot.
+      send({ type: "response.create" });
+    },
+    [captureScreenFrame],
+  );
 
   const cleanup = useCallback(() => {
     // Stop the animation frame loop
@@ -190,6 +391,11 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
                   audio: {
                     input: { transcription: { model: "whisper-1" } },
                   },
+                  // Give the agent an on-demand "look at my screen" tool. Adding
+                  // tools here is a partial update; it does NOT touch the agent's
+                  // server-set instructions/persona.
+                  tools: [VIEW_SCREEN_TOOL],
+                  tool_choice: "auto",
                 },
               }),
             );
@@ -199,30 +405,70 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
         };
 
         dc.onmessage = (e) => {
-          let msg: { type?: string; transcript?: string };
+          let msg: {
+            type?: string;
+            transcript?: string;
+            delta?: string;
+            item?: { type?: string; name?: string; call_id?: string };
+          };
           try {
             msg = JSON.parse(e.data);
           } catch {
             return;
           }
 
-          let role: "user" | "assistant" | null = null;
-          if (msg.type === "conversation.item.input_audio_transcription.completed") {
-            role = "user";
-          } else if (
-            msg.type === "response.output_audio_transcript.done" ||
-            msg.type === "response.audio_transcript.done"
-          ) {
-            role = "assistant";
-          }
+          switch (msg.type) {
+            // ---- Agent tool call: look at the shared screen (on-demand) ---- //
+            case "response.output_item.done": {
+              const item = msg.item;
+              if (
+                item?.type === "function_call" &&
+                item.name === "view_screen" &&
+                item.call_id &&
+                !processedToolCallsRef.current.has(item.call_id)
+              ) {
+                processedToolCallsRef.current.add(item.call_id);
+                void handleViewScreen(item.call_id);
+              }
+              break;
+            }
 
-          if (role && typeof msg.transcript === "string" && msg.transcript.trim()) {
-            transcriptRef.current.push({
-              role,
-              text: msg.transcript.trim(),
-              ts: Date.now(),
-            });
-            scheduleTranscriptSave();
+            // ---- Agent (assistant) ---- //
+            // Streaming deltas → live caption only (not persisted; the .done
+            // event carries the authoritative full transcript we save).
+            case "response.output_audio_transcript.delta":
+            case "response.audio_transcript.delta":
+              applyCaption("assistant", msg.delta ?? "", null);
+              break;
+            case "response.output_audio_transcript.done":
+            case "response.audio_transcript.done": {
+              const t = msg.transcript?.trim();
+              if (t) {
+                transcriptRef.current.push({ role: "assistant", text: t, ts: Date.now() });
+                scheduleTranscriptSave();
+                applyCaption("assistant", null, t);
+              } else {
+                // No final text — just close any open streaming line.
+                agentLineIdRef.current = null;
+              }
+              break;
+            }
+
+            // ---- User ---- //
+            case "conversation.item.input_audio_transcription.delta":
+              applyCaption("user", msg.delta ?? "", null);
+              break;
+            case "conversation.item.input_audio_transcription.completed": {
+              const t = msg.transcript?.trim();
+              if (t) {
+                transcriptRef.current.push({ role: "user", text: t, ts: Date.now() });
+                scheduleTranscriptSave();
+                applyCaption("user", null, t);
+              } else {
+                userLineIdRef.current = null;
+              }
+              break;
+            }
           }
         };
 
@@ -386,10 +632,15 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
       cleanup();
       setIsConnected(false);
       setIsSpeaking(false);
+      captionsRef.current = [];
+      agentLineIdRef.current = null;
+      userLineIdRef.current = null;
+      processedToolCallsRef.current.clear();
+      setCaptions([]);
     };
   // createRealtimeSession is a stable React Query mutation reference.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingId]);
 
-  return { isSpeaking, isConnected, error };
+  return { isSpeaking, isConnected, error, captions };
 }

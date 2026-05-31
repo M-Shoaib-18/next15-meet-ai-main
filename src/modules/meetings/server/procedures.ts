@@ -37,6 +37,47 @@ export const meetingsRouter = createTRPCRouter({
 
     return token;
   }),
+  // Live-caption translation. Called client-side per finalized caption line so
+  // users can read subtitles in any language. Uses gpt-4o-mini (cheap, fast,
+  // near-universal language coverage). Original-language captions cost nothing
+  // extra — only translated lines hit this endpoint.
+  translateCaption: protectedProcedure
+    .input(
+      z.object({
+        text: z.string().min(1).max(2000),
+        // Human-readable target language label, e.g. "Spanish", "Urdu".
+        targetLanguage: z.string().min(1).max(60),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const { text, targetLanguage } = input;
+      try {
+        const completion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0,
+          messages: [
+            {
+              role: "system",
+              content:
+                `You are a translation engine. Translate the user's text into ${targetLanguage}. ` +
+                `Output ONLY the translated text — no quotes, no notes, no explanations. ` +
+                `If the text is already in ${targetLanguage}, return it unchanged. ` +
+                `Preserve tone, meaning, names, and punctuation.`,
+            },
+            { role: "user", content: text },
+          ],
+        });
+
+        const translated = completion.choices[0]?.message?.content?.trim() ?? "";
+        return { translated };
+      } catch (err) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Translation failed. Please try again.",
+          cause: err,
+        });
+      }
+    }),
   getTranscript: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ input, ctx }) => {

@@ -3,13 +3,13 @@
 import { z } from "zod";
 import Link from "next/link";
 import Image from "next/image";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useRouter } from "next/navigation";
 import { FaGithub, FaGoogle } from "react-icons/fa";
 import { zodResolver } from "@hookform/resolvers/zod";
 
-import { MailCheckIcon, OctagonAlertIcon } from "lucide-react";
+import { OctagonAlertIcon } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth-client";
@@ -42,7 +42,11 @@ export const SignUpView = () => {
 
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [verifyEmail, setVerifyEmail] = useState<string | null>(null);
+
+  // Honeypot: a hidden field real users never fill. Bots that auto-fill every
+  // input get silently rejected. Read directly from the DOM (not part of the
+  // form schema) so it never appears in submitted data.
+  const honeypotRef = useRef<HTMLInputElement>(null);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -55,6 +59,11 @@ export const SignUpView = () => {
   });
 
   const onSubmit = (data: z.infer<typeof formSchema>) => {
+    // Honeypot tripped → silently abort (pretend nothing happened to the bot).
+    if (honeypotRef.current?.value) {
+      return;
+    }
+
     setError(null);
     setPending(true);
 
@@ -68,7 +77,9 @@ export const SignUpView = () => {
       {
         onSuccess: () => {
           setPending(false);
-          setVerifyEmail(data.email);
+          // Email verification is disabled, so the user is signed in
+          // immediately — send them straight to the dashboard.
+          router.push("/");
         },
         onError: ({ error }) => {
           setPending(false);
@@ -100,68 +111,22 @@ export const SignUpView = () => {
     );
   };
 
-  if (verifyEmail) {
-    return (
-      <div className="flex flex-col gap-6">
-        <Card className="overflow-hidden p-0">
-          <CardContent className="grid p-0 md:grid-cols-2">
-            <div className="p-6 md:p-8 flex flex-col gap-6">
-              <div className="flex flex-col items-center text-center gap-3">
-                <MailCheckIcon className="size-10 text-primary" />
-                <h1 className="text-2xl font-bold">Check your inbox</h1>
-                <p className="text-muted-foreground text-balance">
-                  We sent a verification link to{" "}
-                  <span className="font-medium text-foreground">{verifyEmail}</span>.
-                  Click the link to activate your account.
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={() => {
-                  authClient.sendVerificationEmail(
-                    { email: verifyEmail, callbackURL: "/" },
-                    {
-                      onSuccess: () => setError(null),
-                      onError: ({ error }) => setError(error.message),
-                    }
-                  );
-                }}
-              >
-                Resend verification email
-              </Button>
-              {!!error && (
-                <Alert className="bg-destructive/10 border-none">
-                  <OctagonAlertIcon className="h-4 w-4 !text-destructive" />
-                  <AlertTitle>{error}</AlertTitle>
-                </Alert>
-              )}
-              <div className="text-center text-sm">
-                Wrong email?{" "}
-                <button
-                  className="underline underline-offset-4"
-                  onClick={() => { setVerifyEmail(null); setError(null); }}
-                >
-                  Go back
-                </button>
-              </div>
-            </div>
-            <div className="bg-radial from-sidebar-accent to-sidebar relative hidden md:flex flex-col gap-y-4 items-center justify-center">
-              <Image src="/logo.svg" alt="Meet.AI Logo" width={92} height={92} priority />
-              <p className="text-2xl font-semibold text-white">Meet.AI</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col gap-6">
       <Card className="overflow-hidden p-0">
         <CardContent className="grid p-0 md:grid-cols-2">
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="p-6 md:p-8">
+              {/* Honeypot — hidden from users, only bots fill it. */}
+              <input
+                ref={honeypotRef}
+                type="text"
+                name="company"
+                tabIndex={-1}
+                autoComplete="off"
+                aria-hidden="true"
+                className="hidden"
+              />
               <div className="flex flex-col gap-6">
                 <div className="flex flex-col items-center text-center">
                   <h1 className="text-2xl font-bold">

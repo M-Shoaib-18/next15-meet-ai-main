@@ -37,10 +37,13 @@ export const Transcript = ({ meetingId }: Props) => {
       </div>
       <ScrollArea>
         <div className="flex flex-col gap-y-4">
-          {filteredData.map((item) => {
+          {filteredData.map((item, index) => {
             return (
               <div
-                key={item.start_ts}
+                // start_ts can repeat across items (e.g. agent/user lines saved
+                // with the same timestamp), so combine it with the index to keep
+                // React keys unique.
+                key={`${item.start_ts}-${index}`}
                 className="flex flex-col gap-y-2 hover:bg-muted p-4 rounded-md border"
               >
                 <div className="flex gap-x-2 items-center">
