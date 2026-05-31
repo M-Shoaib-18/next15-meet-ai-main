@@ -1,3 +1,4 @@
+import OpenAI from "openai";
 import { z } from "zod";
 import JSONL from "jsonl-parse-stringify";
 import { TRPCError } from "@trpc/server";
@@ -5,10 +6,14 @@ import { and, count, desc, eq, getTableColumns, ilike, inArray, sql } from "driz
 
 import { db } from "@/db";
 import { agents, meetings, user } from "@/db/schema";
+import { env } from "@/lib/env";
 import { generateAvatarUri } from "@/lib/avatar";
 import { streamVideo } from "@/lib/stream-video";
+import { inngest } from "@/inngest/client";
 import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/init";
 import { DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE } from "@/constants";
+
+const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
 import { MeetingStatus, StreamTranscriptItem } from "../types";
 import { meetingsInsertSchema, meetingsUpdateSchema } from "../schemas";
@@ -153,6 +158,186 @@ export const meetingsRouter = createTRPCRouter({
 
     return token;
   }),
+  /**
+   * Creates an ephemeral OpenAI Realtime client_secret for a meeting.
+   *
+   * Uses the GA WebRTC client_secrets endpoint (POST /v1/realtime/client_secrets).
+   * The returned ephemeral token is forwarded to the browser, which uses it as
+   * the Authorization header when exchanging the WebRTC SDP offer with OpenAI.
+   */
+  createRealtimeSession: protectedProcedure
+    .input(z.object({ meetingId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const [meeting] = await db
+        .select()
+        .from(meetings)
+        .where(
+          and(
+            eq(meetings.id, input.meetingId),
+            eq(meetings.userId, ctx.auth.user.id),
+          ),
+        );
+
+      if (!meeting) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+      }
+
+      const [agent] = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, meeting.agentId));
+
+      if (!agent) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      }
+
+      // POST /v1/realtime/client_secrets — the GA WebRTC ephemeral-token endpoint.
+      // (/v1/realtime/sessions was removed and now returns 404 "Invalid URL".)
+      // Payload must nest the config inside a "session" object.
+      const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session: {
+            type: "realtime",
+            model: "gpt-realtime",
+            output_modalities: ["audio"],
+            instructions: agent.instructions,
+          },
+        }),
+      });
+
+      // Always read as text first so we can log the raw body for debugging.
+      const rawBody = await response.text();
+      console.log(
+        `[createRealtimeSession] status=${response.status} body=${rawBody.slice(0, 600)}`,
+      );
+
+      if (!response.ok) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `OpenAI token request failed (${response.status}): ${rawBody.slice(0, 200)}`,
+        });
+      }
+
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(rawBody) as Record<string, unknown>;
+      } catch {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "OpenAI returned non-JSON response",
+        });
+      }
+
+      // Extract the ephemeral token. The GA /client_secrets endpoint returns the
+      // token at the TOP LEVEL as `value`. We also fall back to the older
+      // `client_secret.value` / string shapes for resilience across versions.
+      const secretObj = parsed.client_secret as { value?: string } | string | undefined;
+      const ephemeralToken =
+        (typeof parsed.value === "string" ? parsed.value : undefined) ??
+        (typeof secretObj === "object" && secretObj !== null ? secretObj.value : undefined) ??
+        (typeof secretObj === "string" ? secretObj : undefined);
+
+      if (!ephemeralToken) {
+        console.error(
+          "[createRealtimeSession] Unexpected response shape — full body:",
+          rawBody.slice(0, 600),
+        );
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "client_secret missing from OpenAI response",
+        });
+      }
+
+      return { client_secret: ephemeralToken };
+    }),
+  /**
+   * Persists the two-sided transcript captured client-side from the OpenAI
+   * Realtime data channel. Because Stream's own transcription is disabled for
+   * agent meetings, this is the authoritative transcript for the meeting.
+   *
+   * The items are serialized into the same JSONL shape Stream produces
+   * (StreamTranscriptItem) and stored as a `data:` URL in `transcriptUrl`, so
+   * the existing getTranscript query, transcript UI, and Inngest summary
+   * pipeline all work unchanged — the only difference is the source of truth.
+   *
+   * speaker_id is set to the real user id / agent id so getTranscript and the
+   * summarizer resolve the correct display names for each side.
+   */
+  saveRealtimeTranscript: protectedProcedure
+    .input(
+      z.object({
+        meetingId: z.string(),
+        items: z.array(
+          z.object({
+            role: z.enum(["user", "assistant"]),
+            text: z.string(),
+            ts: z.number(),
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [meeting] = await db
+        .select()
+        .from(meetings)
+        .where(
+          and(
+            eq(meetings.id, input.meetingId),
+            eq(meetings.userId, ctx.auth.user.id),
+          ),
+        );
+
+      if (!meeting) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+      }
+
+      const streamItems: StreamTranscriptItem[] = input.items
+        .filter((item) => item.text.trim() !== "")
+        .map((item) => ({
+          speaker_id: item.role === "user" ? ctx.auth.user.id : meeting.agentId,
+          type: "speech",
+          text: item.text,
+          start_ts: item.ts,
+          stop_ts: item.ts,
+        }));
+
+      // Encode as a data: URL so the existing transcriptUrl-based pipeline can
+      // fetch it verbatim (Node/undici fetch supports the data: scheme).
+      const jsonl = JSONL.stringify(streamItems);
+      const dataUrl = `data:application/jsonl;base64,${Buffer.from(jsonl, "utf8").toString("base64")}`;
+
+      await db
+        .update(meetings)
+        .set({ transcriptUrl: dataUrl })
+        .where(eq(meetings.id, input.meetingId));
+
+      // If the call already ended (status === "processing"), the webhook's
+      // active→processing transition has already fired without a transcript to
+      // summarize. Kick off summarization now. The shared Inngest event id
+      // (`mp-<meetingId>`) dedupes against the webhook trigger so the summary
+      // runs exactly once regardless of ordering.
+      if (meeting.status === "processing") {
+        try {
+          await inngest.send({
+            id: `mp-${input.meetingId}`,
+            name: "meetings/processing",
+            data: { meetingId: input.meetingId, transcriptUrl: dataUrl },
+          });
+        } catch (err) {
+          console.error(
+            `[saveRealtimeTranscript] Failed to trigger summary for ${input.meetingId}:`,
+            err,
+          );
+        }
+      }
+
+      return { ok: true, count: streamItems.length };
+    }),
   remove: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
@@ -219,10 +404,18 @@ export const meetingsRouter = createTRPCRouter({
               meetingName: createdMeeting.name,
             },
             settings_override: {
+              // Stream's built-in transcription only "hears" audio published
+              // into the call. The AI agent talks over a direct browser→OpenAI
+              // WebRTC link, so Stream would transcribe the human only and
+              // produce a one-sided transcript/summary. We disable it and use
+              // OpenAI Realtime's own two-sided transcript instead (captured
+              // client-side and saved via saveRealtimeTranscript). Recording
+              // stays on — the agent's voice is mixed into the published mic
+              // track in use-openai-voice.ts so it is captured in the recording.
               transcription: {
                 language: "en",
-                mode: "auto-on",
-                closed_caption_mode: "auto-on",
+                mode: "disabled",
+                closed_caption_mode: "disabled",
               },
               recording: {
                 mode: "auto-on",

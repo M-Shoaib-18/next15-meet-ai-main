@@ -7,12 +7,48 @@ import { initTRPC, TRPCError } from '@trpc/server';
 import { count, eq } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { cache } from 'react';
+
 export const createTRPCContext = cache(async () => {
   /**
    * @see: https://trpc.io/docs/server/context
    */
   return { userId: 'user_123' };
 });
+
+/**
+ * Fetches the Polar customer state by externalId.
+ * If not found (customer exists in Polar but externalId was never linked —
+ * e.g. the user subscribed before signing up in the app, or the onSignUp hook
+ * ran before the subscription was recorded), we repair the link by looking up
+ * the customer by email and updating their externalId.
+ */
+export async function getCustomerState(userId: string, userEmail: string) {
+  // Fast path: customer already linked by externalId
+  try {
+    return await polarClient.customers.getStateExternal({ externalId: userId });
+  } catch {
+    // Fall through to repair path
+  }
+
+  // Repair path: find customer by email and link externalId
+  try {
+    const { result } = await polarClient.customers.list({ email: userEmail });
+    const existing = result.items[0];
+    if (!existing) return null;
+
+    if (existing.externalId !== userId) {
+      await polarClient.customers.update({
+        id: existing.id,
+        customerUpdate: { externalId: userId },
+      });
+    }
+
+    return await polarClient.customers.getStateExternal({ externalId: userId });
+  } catch (err) {
+    console.error("[polar] getCustomerState failed for userId=%s:", userId, err);
+    return null;
+  }
+}
 // Avoid exporting the entire t-object
 // since it's not very descriptive.
 // For instance, the use of a t variable
@@ -43,16 +79,7 @@ export const protectedProcedure = baseProcedure.use(async ({ ctx, next }) => {
 });
 export const premiumProcedure = (entity: "meetings" | "agents") =>
   protectedProcedure.use(async ({ ctx, next }) => {
-    // Polar may throw if the user has no customer record yet (e.g. created
-    // before the Polar plugin was active, or sandbox was reset). Treat as free.
-    let customer: Awaited<ReturnType<typeof polarClient.customers.getStateExternal>> | null = null;
-    try {
-      customer = await polarClient.customers.getStateExternal({
-        externalId: ctx.auth.user.id,
-      });
-    } catch {
-      customer = null;
-    }
+    const customer = await getCustomerState(ctx.auth.user.id, ctx.auth.user.email);
 
     const [userMeetings] = await db
       .select({

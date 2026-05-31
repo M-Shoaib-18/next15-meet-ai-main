@@ -21,6 +21,7 @@ jest.mock("@/lib/stream-video", () => ({
     verifyWebhook: jest.fn(() => true),
     video: { call: jest.fn() },
     generateCallToken: jest.fn(),
+    upsertUsers: jest.fn().mockResolvedValue({}),
   },
 }));
 jest.mock("@/lib/stream-chat", () => ({ streamChat: {} }));
@@ -73,6 +74,10 @@ function makeMockClient() {
     connect: jest.fn().mockResolvedValue(true),
     disconnect: jest.fn().mockResolvedValue(undefined),
     updateSession: jest.fn(),
+    waitForSessionCreated: jest.fn().mockResolvedValue(true),
+    // awaitSessionCreated() checks this flag first; setting true triggers the fast-path
+    // (returns immediately without registering server.session.created / close listeners).
+    sessionCreated: true,
     /** Simulate WebSocket close from the outside. */
     _triggerClose(error = false) {
       closeHandlers.forEach((h) => h({ error }));
@@ -147,6 +152,9 @@ describe("generateAgentToken", () => {
 describe("connectAgent reconnection", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Clear the global agent connections map so the duplicate-guard doesn't
+    // carry state from a previous test in this suite.
+    (globalThis as { __agentConnections?: Map<string, unknown> }).__agentConnections?.clear();
     (streamVideo.video.call as jest.Mock).mockReturnValue({
       cid: "default:mtg-1",
     });
@@ -163,19 +171,19 @@ describe("connectAgent reconnection", () => {
     const mockClient = makeMockClient();
     (createRealtimeClient as jest.Mock).mockReturnValue(mockClient);
 
-    await connectAgent("mtg-1", "agent-1", "Be helpful.");
+    await connectAgent("mtg-1", "agent-1", "Test Agent", "Be helpful.");
 
     expect(mockClient.connect).toHaveBeenCalledTimes(1);
-    expect(mockClient.updateSession).toHaveBeenCalledWith({
-      instructions: "Be helpful.",
-    });
+    expect(mockClient.updateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "realtime", instructions: "Be helpful." }),
+    );
   });
 
   it("attaches a close listener after connecting", async () => {
     const mockClient = makeMockClient();
     (createRealtimeClient as jest.Mock).mockReturnValue(mockClient);
 
-    await connectAgent("mtg-1", "agent-1", "Be helpful.");
+    await connectAgent("mtg-1", "agent-1", "Test Agent", "Be helpful.");
 
     expect(mockClient.realtime.on).toHaveBeenCalledWith(
       "close",
@@ -205,7 +213,7 @@ describe("connectAgent reconnection", () => {
     drizzle.eq.mockReturnValue("eq-expr");
 
     // Connect initially
-    await connectAgent("mtg-1", "agent-1", "instructions", 0);
+    await connectAgent("mtg-1", "agent-1", "Test Agent", "instructions", 0);
     expect(clients).toHaveLength(1);
 
     // Simulate unexpected close (error=true) on the first client.
@@ -232,7 +240,7 @@ describe("connectAgent reconnection", () => {
     (createRealtimeClient as jest.Mock).mockReturnValue(mockClient);
 
     // Call connectAgent already at the retry limit
-    await connectAgent("mtg-1", "agent-1", "instructions", MAX_AGENT_RETRIES);
+    await connectAgent("mtg-1", "agent-1", "Test Agent", "instructions", MAX_AGENT_RETRIES);
 
     // Trigger close — no further connect attempts should happen
     mockClient._triggerClose(true);
@@ -254,7 +262,7 @@ describe("connectAgent reconnection", () => {
       }),
     });
 
-    await connectAgent("mtg-1", "agent-1", "instructions", 0);
+    await connectAgent("mtg-1", "agent-1", "Test Agent", "instructions", 0);
 
     jest.useFakeTimers();
     mockClient._triggerClose(false);

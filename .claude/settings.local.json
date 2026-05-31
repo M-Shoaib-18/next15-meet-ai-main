@@ -25,7 +25,14 @@
       "Bash(node -e \"const d=require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\); const p=JSON.parse\\(d\\); console.log\\('scripts:', JSON.stringify\\(p.scripts,null,2\\)\\); console.log\\('devDeps test:', Object.keys\\({...p.devDependencies,...p.dependencies}\\).filter\\(k=>k.includes\\('jest'\\)||k.includes\\('vitest'\\)||k.includes\\('test'\\)\\).join\\(', '\\)\\);\")",
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('scripts:', JSON.stringify\\(p.scripts,null,2\\)\\); const all={...p.dependencies,...p.devDependencies}; const test=Object.keys\\(all\\).filter\\(k=>k.includes\\('jest'\\)||k.includes\\('vitest'\\)||k.includes\\('@testing'\\)\\); console.log\\('test deps:', test\\);\")",
       "Bash(npx jest *)",
-      "Bash(node -e \"const ts = require\\('./node_modules/typescript'\\); console.log\\('TS version:', ts.version\\);\")"
+      "Bash(node -e \"const ts = require\\('./node_modules/typescript'\\); console.log\\('TS version:', ts.version\\);\")",
+      "WebFetch(domain:getstream.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s \"https://api.github.com/repos/GetStream/stream-video-node-sdk/contents/sample-apps\")",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(f['name'], f.get\\('type',''\\)\\) for f in data]\")",
+      "Bash(curl -s --max-time 10 \"https://api.github.com/repos/GetStream/stream-video-node-sdk/git/trees/main?recursive=1\")",
+      "Bash(python3 -c ' *)"
     ]
   }
 }

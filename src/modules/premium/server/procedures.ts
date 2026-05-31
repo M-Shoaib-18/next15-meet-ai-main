@@ -7,20 +7,14 @@ import { TRPCError } from "@trpc/server";
 import {
   createTRPCRouter,
   protectedProcedure,
+  getCustomerState,
 } from "@/trpc/init";
 
 export const premiumRouter = createTRPCRouter({
   getCurrentSubscription: protectedProcedure.query(async ({ ctx }) => {
-    let customer: Awaited<ReturnType<typeof polarClient.customers.getStateExternal>> | null = null;
-    try {
-      customer = await polarClient.customers.getStateExternal({
-        externalId: ctx.auth.user.id,
-      });
-    } catch {
-      return null;
-    }
+    const customer = await getCustomerState(ctx.auth.user.id, ctx.auth.user.email);
 
-    const subscription = customer.activeSubscriptions[0];
+    const subscription = customer?.activeSubscriptions[0];
 
     if (!subscription) {
       return null;
@@ -48,14 +42,7 @@ export const premiumRouter = createTRPCRouter({
     }
   }),
   getFreeUsage: protectedProcedure.query(async ({ ctx }) => {
-    let customer: Awaited<ReturnType<typeof polarClient.customers.getStateExternal>> | null = null;
-    try {
-      customer = await polarClient.customers.getStateExternal({
-        externalId: ctx.auth.user.id,
-      });
-    } catch {
-      customer = null;
-    }
+    const customer = await getCustomerState(ctx.auth.user.id, ctx.auth.user.email);
 
     // Premium users: no free-usage cap to display
     const isActiveSubscriber = (customer?.activeSubscriptions.length ?? 0) > 0;

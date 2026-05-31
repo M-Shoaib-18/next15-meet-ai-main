@@ -10,9 +10,11 @@ import { CallConnect } from "./call-connect";
 interface Props {
   meetingId: string;
   meetingName: string;
+  agentId: string;
+  agentName: string;
 };
 
-export const CallProvider = ({ meetingId, meetingName }: Props) => {
+export const CallProvider = ({ meetingId, meetingName, agentId, agentName }: Props) => {
   const { data, isPending } = authClient.useSession();
 
   if (!data || isPending) {
@@ -33,6 +35,8 @@ export const CallProvider = ({ meetingId, meetingName }: Props) => {
         data.user.image ??
         generateAvatarUri({ seed: data.user.name, variant: "initials" })
       }
+      agentId={agentId}
+      agentName={agentName}
     />
   );
 };

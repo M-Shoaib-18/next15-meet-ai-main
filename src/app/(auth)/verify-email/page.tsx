@@ -6,7 +6,11 @@ import { VerifyEmailView } from "@/modules/auth/ui/views/verify-email-view";
 const Page = async () => {
   const session = await getSessionSafe();
 
-  if (session?.user.emailVerified) {
+  if (!session) {
+    redirect("/sign-in");
+  }
+
+  if (session.user.emailVerified) {
     redirect("/");
   }
 

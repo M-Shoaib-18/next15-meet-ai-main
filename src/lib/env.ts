@@ -35,6 +35,7 @@ const serverEnvSchema = z.object({
 
   // Polar
   POLAR_ACCESS_TOKEN: z.string().min(1, "POLAR_ACCESS_TOKEN is required"),
+  POLAR_WEBHOOK_SECRET: emptyToUndefined,
 
   // Inngest
   INNGEST_EVENT_KEY: emptyToUndefined,

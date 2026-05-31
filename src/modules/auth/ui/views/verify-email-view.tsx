@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { MailCheckIcon, OctagonAlertIcon } from "lucide-react";
 
 import { authClient } from "@/lib/auth-client";
@@ -12,10 +12,16 @@ import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 
 export const VerifyEmailView = () => {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [pending, setPending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleSignOut = async () => {
+    await authClient.signOut();
+    router.push("/sign-in");
+  };
 
   const handleResend = () => {
     if (!email) {
@@ -86,9 +92,12 @@ export const VerifyEmailView = () => {
             )}
 
             <div className="text-center text-sm">
-              <Link href="/sign-in" className="underline underline-offset-4">
+              <button
+                onClick={handleSignOut}
+                className="underline underline-offset-4 text-sm"
+              >
                 Back to sign in
-              </Link>
+              </button>
             </div>
           </div>
 
