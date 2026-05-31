@@ -14,10 +14,19 @@ interface Props {
 export const LiveCaptions = ({ captions, translator, agentName }: Props) => {
   const { enabled, request, get } = translator;
 
-  // YouTube-style: show only the CURRENT speaker — the most recent line with
-  // text. When the user stops and the agent starts replying, a new line becomes
-  // active and the previous one disappears automatically.
-  const active = [...captions].reverse().find((l) => l.text.trim());
+  // YouTube-style: show only the CURRENT speaker. We pick the line that is being
+  // spoken RIGHT NOW by the highest `updatedAt` (activity clock), preferring a
+  // still-streaming line over finalized ones. Relying on array position instead
+  // would get stuck on a stale line when the user's and agent's transcripts
+  // interleave or finalize out of order, so the overlay would freeze on one
+  // speaker. With this, it switches live between the user and the agent.
+  const withText = captions.filter((l) => l.text.trim());
+  const streaming = withText.filter((l) => !l.final);
+  const pool = streaming.length > 0 ? streaming : withText;
+  const active = pool.reduce<CaptionLine | undefined>(
+    (best, l) => (!best || l.updatedAt > best.updatedAt ? l : best),
+    undefined,
+  );
 
   // Translate the active line once it is finalized (request is cached/de-duped).
   useEffect(() => {

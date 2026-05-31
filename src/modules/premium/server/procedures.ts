@@ -9,8 +9,32 @@ import {
   protectedProcedure,
   getCustomerState,
 } from "@/trpc/init";
+import { getEntitlements, resolveTier } from "../entitlements";
 
 export const premiumRouter = createTRPCRouter({
+  /**
+   * Resolves the current user's plan entitlements (tier + feature flags) from
+   * their active Polar subscription product name. No subscription → "basic".
+   * Used to gate meeting duration, live captions, and (future) invites.
+   */
+  getEntitlement: protectedProcedure.query(async ({ ctx }) => {
+    const customer = await getCustomerState(ctx.auth.user.id, ctx.auth.user.email);
+    const subscription = customer?.activeSubscriptions[0];
+
+    let productName: string | null = null;
+    if (subscription) {
+      try {
+        const product = await polarClient.products.get({
+          id: subscription.productId,
+        });
+        productName = product.name;
+      } catch {
+        // Product lookup failed — fall back to basic entitlements below.
+      }
+    }
+
+    return getEntitlements(resolveTier(productName));
+  }),
   getCurrentSubscription: protectedProcedure.query(async ({ ctx }) => {
     const customer = await getCustomerState(ctx.auth.user.id, ctx.auth.user.email);
 

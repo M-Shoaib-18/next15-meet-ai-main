@@ -12,6 +12,7 @@ import { streamVideo } from "@/lib/stream-video";
 import { inngest } from "@/inngest/client";
 import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/init";
 import { DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE } from "@/constants";
+import { MAX_MEETING_DURATION_SECONDS } from "@/modules/premium/entitlements";
 
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
@@ -461,6 +462,12 @@ export const meetingsRouter = createTRPCRouter({
               recording: {
                 mode: "auto-on",
                 quality: "1080p",
+              },
+              // Plan cap: every tier auto-ends a meeting at 1 hour. Enforced
+              // server-side by Stream so it can't be bypassed by a page refresh;
+              // the client also runs a graceful auto-leave timer (call-active).
+              limits: {
+                max_duration_seconds: MAX_MEETING_DURATION_SECONDS,
               },
             },
           },

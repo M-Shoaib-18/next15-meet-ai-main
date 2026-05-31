@@ -13,6 +13,11 @@ export interface CaptionLine {
   role: "user" | "assistant";
   text: string;
   final: boolean;
+  // Monotonic counter bumped every time this line receives a delta or is
+  // finalized. Lets the overlay pick the line that is *currently* being spoken
+  // (highest value) instead of relying on array position, which gets stuck on a
+  // stale line when user/agent transcripts interleave or finalize out of order.
+  updatedAt: number;
 }
 
 export interface UseOpenAIVoiceResult {
@@ -95,6 +100,9 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
   const agentLineIdRef = useRef<string | null>(null);
   const userLineIdRef  = useRef<string | null>(null);
   const lineSeqRef     = useRef(0);
+  // Monotonic "activity clock": incremented on every caption delta/finalize so
+  // the overlay can identify the line that was most recently spoken.
+  const activitySeqRef = useRef(0);
 
   // Append a streaming delta or finalize a caption line for a given speaker.
   // Pass `finalText` to close the line (replaces any partial with the
@@ -103,25 +111,26 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
     (role: "user" | "assistant", delta: string | null, finalText: string | null) => {
       const openIdRef = role === "assistant" ? agentLineIdRef : userLineIdRef;
       let lines = captionsRef.current;
+      const order = ++activitySeqRef.current;
 
       if (finalText !== null) {
         if (openIdRef.current) {
           lines = lines.map((l) =>
-            l.id === openIdRef.current ? { ...l, text: finalText, final: true } : l,
+            l.id === openIdRef.current ? { ...l, text: finalText, final: true, updatedAt: order } : l,
           );
         } else {
-          lines = [...lines, { id: `c${++lineSeqRef.current}`, role, text: finalText, final: true }];
+          lines = [...lines, { id: `c${++lineSeqRef.current}`, role, text: finalText, final: true, updatedAt: order }];
         }
         openIdRef.current = null;
       } else if (delta) {
         if (openIdRef.current) {
           lines = lines.map((l) =>
-            l.id === openIdRef.current ? { ...l, text: l.text + delta } : l,
+            l.id === openIdRef.current ? { ...l, text: l.text + delta, updatedAt: order } : l,
           );
         } else {
           const id = `c${++lineSeqRef.current}`;
           openIdRef.current = id;
-          lines = [...lines, { id, role, text: delta, final: false }];
+          lines = [...lines, { id, role, text: delta, final: false, updatedAt: order }];
         }
       } else {
         return;
@@ -382,6 +391,12 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
         dc.onopen = () => {
           // Ask OpenAI to transcribe the user's spoken input too. The agent's
           // own output transcript is emitted automatically for audio output.
+          //
+          // We use `gpt-4o-mini-transcribe` (not `whisper-1`) because it streams
+          // partial results via `...input_audio_transcription.delta` events, so
+          // the user's caption appears WORD-BY-WORD in real time. whisper-1 only
+          // emits a single `.completed` event at the end, which made the overlay
+          // appear "stuck" on the previous (agent) line while the user spoke.
           try {
             dc.send(
               JSON.stringify({
@@ -389,7 +404,7 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
                 session: {
                   type: "realtime",
                   audio: {
-                    input: { transcription: { model: "whisper-1" } },
+                    input: { transcription: { model: "gpt-4o-mini-transcribe" } },
                   },
                   // Give the agent an on-demand "look at my screen" tool. Adding
                   // tools here is a partial update; it does NOT touch the agent's

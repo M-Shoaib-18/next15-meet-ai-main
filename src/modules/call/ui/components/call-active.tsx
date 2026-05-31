@@ -1,12 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { CaptionsIcon, ScrollTextIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import {
   CallControls,
+  CallingState,
   ParticipantView,
+  useCall,
   useCallStateHooks,
 } from "@stream-io/video-react-sdk";
 
@@ -17,7 +20,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useTRPC } from "@/trpc/client";
 import { generateAvatarUri } from "@/lib/avatar";
+import { MAX_MEETING_DURATION_SECONDS } from "@/modules/premium/entitlements";
 import { useOpenAIVoice } from "../hooks/use-openai-voice";
 import { useCaptionTranslations } from "../hooks/use-caption-translations";
 import { CAPTION_LANGUAGES, CAPTIONS_OFF } from "../constants";
@@ -33,8 +38,30 @@ interface Props {
 }
 
 export const CallActive = ({ onLeave, meetingId, meetingName, agentId, agentName }: Props) => {
+  const call = useCall();
   const { useParticipants } = useCallStateHooks();
   const participants = useParticipants();
+
+  // Plan entitlements. Live subtitles/captions are a Pro+ feature; Basic users
+  // (and anyone whose entitlement hasn't loaded yet) get no on-screen captions.
+  const trpc = useTRPC();
+  const { data: entitlement } = useQuery(trpc.premium.getEntitlement.queryOptions());
+  const captionsEnabled = entitlement?.captionsEnabled ?? false;
+
+  // Every plan caps a meeting at 1 hour. When the cap is reached we leave the
+  // call gracefully (same path as clicking "leave") so the user sees the
+  // "Meeting ended" screen and the transcript is persisted. Stream also enforces
+  // this server-side via max_duration_seconds, so a refresh can't bypass it.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (call && call.state.callingState !== CallingState.LEFT) {
+        call.leave().catch(() => {});
+      }
+      onLeave();
+    }, MAX_MEETING_DURATION_SECONDS * 1000);
+
+    return () => clearTimeout(timer);
+  }, [call, onLeave]);
 
   // Agent is no longer a Stream WebRTC participant — voice is handled via a
   // direct browser→OpenAI WebRTC connection (Stream's connect_agent proxy is
@@ -68,7 +95,8 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId, agentName
         </Link>
         <h4 className="text-base">{meetingName}</h4>
 
-        {/* Live-subtitle language picker */}
+        {/* Live-subtitle language picker (Pro+ only) */}
+        {captionsEnabled && (
         <div className="ml-auto flex items-center gap-2">
           <CaptionsIcon className="size-4 text-white/60" />
           <Select value={captionLanguage} onValueChange={setCaptionLanguage}>
@@ -103,6 +131,7 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId, agentName
             <span className="hidden sm:inline">Transcript</span>
           </button>
         </div>
+        )}
       </div>
 
       <div className="flex flex-1 gap-4 my-4 min-h-0">
@@ -161,16 +190,18 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId, agentName
           )}
         </div>
 
-        {/* Live subtitles overlay (bottom, Netflix-style) */}
-        <LiveCaptions
-          captions={captions}
-          translator={translator}
-          agentName={agentName}
-        />
+        {/* Live subtitles overlay (bottom, Netflix-style) — Pro+ only */}
+        {captionsEnabled && (
+          <LiveCaptions
+            captions={captions}
+            translator={translator}
+            agentName={agentName}
+          />
+        )}
         </div>
 
-        {/* Full scrolling transcript side panel */}
-        {showTranscript && (
+        {/* Full scrolling transcript side panel — Pro+ only */}
+        {captionsEnabled && showTranscript && (
           <TranscriptPanel
             captions={captions}
             translator={translator}
