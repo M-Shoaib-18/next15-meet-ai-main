@@ -40,11 +40,21 @@ const SPEAKING_THRESHOLD = 8;
 // Debounce for persisting the running transcript to the server (ms).
 const TRANSCRIPT_SAVE_DEBOUNCE = 1500;
 
+// Cost control: the Realtime API re-bills the ENTIRE conversation on every agent
+// reply, so cost grows roughly quadratically over a long meeting. We keep only
+// the most recent N conversation items in the model's context and delete older
+// ones (via conversation.item.delete). This does NOT affect the saved meeting
+// transcript or the on-screen captions — both are captured independently from
+// the transcript/caption events, not from the model's context window. ~24 items
+// ≈ the last dozen turns, which is plenty for a coherent conversation.
+const MAX_CONTEXT_ITEMS = 24;
+
 // Screen-vision: max width (px) and JPEG quality for screenshots sent to the
 // agent. Downscaling keeps image-token cost and latency reasonable while
-// keeping text/code on screen legible.
-const SCREENSHOT_MAX_WIDTH = 1280;
-const SCREENSHOT_JPEG_QUALITY = 0.7;
+// keeping text/code on screen legible. 1024px (vs full-res) meaningfully cuts
+// image tokens while staying readable for most on-screen text.
+const SCREENSHOT_MAX_WIDTH = 1024;
+const SCREENSHOT_JPEG_QUALITY = 0.65;
 
 // Tool the agent calls on-demand when the user asks about what's on their
 // screen. When invoked, our client captures the currently shared screen and
@@ -161,6 +171,12 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
   // ---- Screen vision (on-demand "look at my screen" tool) ---- //
   // De-dupes function-call handling so a single tool call captures once.
   const processedToolCallsRef = useRef<Set<string>>(new Set());
+
+  // ---- Context window trimming (cost control) ---- //
+  // Ordered ids of the conversation items currently in the model's context.
+  // Once it exceeds MAX_CONTEXT_ITEMS we delete the oldest so each agent reply
+  // doesn't re-bill the entire meeting.
+  const contextItemIdsRef = useRef<string[]>([]);
 
   // Grab a single downscaled JPEG frame of the user's currently shared screen
   // (via Stream's screen-share track). Returns a data URL, or null if nothing
@@ -424,7 +440,7 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
             type?: string;
             transcript?: string;
             delta?: string;
-            item?: { type?: string; name?: string; call_id?: string };
+            item?: { id?: string; type?: string; name?: string; call_id?: string };
           };
           try {
             msg = JSON.parse(e.data);
@@ -433,6 +449,32 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
           }
 
           switch (msg.type) {
+            // ---- Context trimming (cost control) ---- //
+            // Track each conversation item the model keeps and delete the oldest
+            // once we exceed the window, so a reply never re-bills the whole
+            // meeting. The newest items (incl. any in-progress response) are
+            // never touched. Independent of transcript saving and captions.
+            case "conversation.item.created": {
+              const id = msg.item?.id;
+              if (id) {
+                const ids = contextItemIdsRef.current;
+                ids.push(id);
+                while (ids.length > MAX_CONTEXT_ITEMS) {
+                  const oldId = ids.shift();
+                  if (oldId) {
+                    try {
+                      dcRef.current?.send(
+                        JSON.stringify({ type: "conversation.item.delete", item_id: oldId }),
+                      );
+                    } catch {
+                      /* channel closing — ignore */
+                    }
+                  }
+                }
+              }
+              break;
+            }
+
             // ---- Agent tool call: look at the shared screen (on-demand) ---- //
             case "response.output_item.done": {
               const item = msg.item;
@@ -651,6 +693,7 @@ export function useOpenAIVoice(meetingId: string): UseOpenAIVoiceResult {
       agentLineIdRef.current = null;
       userLineIdRef.current = null;
       processedToolCallsRef.current.clear();
+      contextItemIdsRef.current = [];
       setCaptions([]);
     };
   // createRealtimeSession is a stable React Query mutation reference.

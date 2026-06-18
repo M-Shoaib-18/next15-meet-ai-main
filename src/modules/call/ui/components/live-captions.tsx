@@ -1,50 +1,109 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import type { CaptionLine } from "../hooks/use-openai-voice";
-import type { CaptionTranslator } from "../hooks/use-caption-translations";
 
 interface Props {
   captions: CaptionLine[];
-  translator: CaptionTranslator;
   agentName: string;
 }
 
-export const LiveCaptions = ({ captions, translator, agentName }: Props) => {
-  const { enabled, request, get } = translator;
+// How long a speaker's caption stays on screen after their LAST activity before
+// it auto-hides. While a speaker keeps talking (new deltas/finals arrive) the
+// timer resets, so it only disappears once they've been silent this long.
+const CAPTION_TTL_MS = 10_000;
 
-  // YouTube-style: show only the CURRENT speaker. We pick the line that is being
-  // spoken RIGHT NOW by the highest `updatedAt` (activity clock), preferring a
-  // still-streaming line over finalized ones. Relying on array position instead
-  // would get stuck on a stale line when the user's and agent's transcripts
-  // interleave or finalize out of order, so the overlay would freeze on one
-  // speaker. With this, it switches live between the user and the agent.
-  const withText = captions.filter((l) => l.text.trim());
-  const streaming = withText.filter((l) => !l.final);
-  const pool = streaming.length > 0 ? streaming : withText;
-  const active = pool.reduce<CaptionLine | undefined>(
-    (best, l) => (!best || l.updatedAt > best.updatedAt ? l : best),
-    undefined,
-  );
+export const LiveCaptions = ({ captions, agentName }: Props) => {
+  // Show BOTH speakers at once: the agent's current line bottom-LEFT and the
+  // user's current line bottom-RIGHT, side by side. We pick the most recent
+  // line per speaker (the streaming one while they talk, otherwise their last
+  // utterance), so each side updates in real time and neither hides the other.
+  const latestAgent = [...captions]
+    .reverse()
+    .find((l) => l.role === "assistant" && l.text.trim());
+  const latestUser = [...captions]
+    .reverse()
+    .find((l) => l.role === "user" && l.text.trim());
 
-  // Translate the active line once it is finalized (request is cached/de-duped).
+  // Per-speaker auto-hide. `updatedAt` bumps on every delta/finalize, so keying
+  // the timer on it resets the countdown whenever that speaker is active and
+  // expires CAPTION_TTL_MS after they go quiet — e.g. the user's caption clears
+  // ~10s after they stop talking, even while the agent keeps answering.
+  const [agentVisible, setAgentVisible] = useState(false);
+  const [userVisible, setUserVisible] = useState(false);
+
+  const agentKey = latestAgent ? `${latestAgent.id}:${latestAgent.updatedAt}` : null;
+  const userKey = latestUser ? `${latestUser.id}:${latestUser.updatedAt}` : null;
+
   useEffect(() => {
-    if (active) request(active);
-  }, [active, request]);
+    if (!agentKey) {
+      setAgentVisible(false);
+      return;
+    }
+    setAgentVisible(true);
+    const t = setTimeout(() => setAgentVisible(false), CAPTION_TTL_MS);
+    return () => clearTimeout(t);
+  }, [agentKey]);
 
-  if (!active) return null;
+  useEffect(() => {
+    if (!userKey) {
+      setUserVisible(false);
+      return;
+    }
+    setUserVisible(true);
+    const t = setTimeout(() => setUserVisible(false), CAPTION_TTL_MS);
+    return () => clearTimeout(t);
+  }, [userKey]);
 
-  const translated = get(active);
-  const speaker = active.role === "assistant" ? agentName : "You";
-  const speakerClass =
-    active.role === "assistant" ? "text-blue-300" : "text-emerald-300";
+  const showAgent = !!latestAgent && agentVisible;
+  const showUser = !!latestUser && userVisible;
+
+  if (!showAgent && !showUser) return null;
 
   return (
-    <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 w-[min(90%,720px)] -translate-x-1/2">
+    <>
+      {showAgent && (
+        <CaptionBubble
+          side="left"
+          speaker={agentName}
+          speakerClass="text-blue-300"
+          line={latestAgent}
+        />
+      )}
+      {showUser && (
+        <CaptionBubble
+          side="right"
+          speaker="You"
+          speakerClass="text-emerald-300"
+          line={latestUser}
+        />
+      )}
+    </>
+  );
+};
+
+interface BubbleProps {
+  side: "left" | "right";
+  speaker: string;
+  speakerClass: string;
+  line: CaptionLine;
+}
+
+const CaptionBubble = ({ side, speaker, speakerClass, line }: BubbleProps) => {
+  const isLeft = side === "left";
+
+  return (
+    <div
+      className={`pointer-events-none absolute bottom-4 z-10 w-[min(44%,520px)] ${
+        isLeft ? "left-4" : "right-4"
+      }`}
+    >
       <div className="flex flex-col gap-1 rounded-xl bg-black/70 px-4 py-2 backdrop-blur-sm">
         <span
-          className={`text-center text-xs font-semibold uppercase tracking-wide ${speakerClass}`}
+          className={`text-xs font-semibold uppercase tracking-wide ${speakerClass} ${
+            isLeft ? "text-left" : "text-right"
+          }`}
         >
           {speaker}
         </span>
@@ -53,22 +112,17 @@ export const LiveCaptions = ({ captions, translator, agentName }: Props) => {
           Each caption is clipped to a 2-line window pinned to the BOTTOM:
           `max-h-14` (2 × leading-7) + `overflow-hidden` + `justify-end` means a
           long sentence overflows and is clipped at the TOP, so only the latest
-          ~2 lines stay visible. As more words stream/arrive, older lines roll
-          up out of view — exactly like YouTube captions, at any screen width.
+          ~2 lines stay visible — exactly like YouTube captions, at any width.
         */}
         <div className="flex max-h-14 flex-col justify-end overflow-hidden">
-          <p className="text-center text-base leading-7 break-words text-white">
-            {active.text}
+          <p
+            className={`text-base leading-7 break-words text-white ${
+              isLeft ? "text-left" : "text-right"
+            }`}
+          >
+            {line.text}
           </p>
         </div>
-
-        {enabled && (
-          <div className="flex max-h-14 flex-col justify-end overflow-hidden">
-            <p className="text-center text-base italic leading-7 break-words text-blue-100/90">
-              {translated ?? "…"}
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );

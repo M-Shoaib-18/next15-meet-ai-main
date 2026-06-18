@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import { z } from "zod";
 import JSONL from "jsonl-parse-stringify";
 import { TRPCError } from "@trpc/server";
@@ -14,71 +13,29 @@ import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/i
 import { DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE } from "@/constants";
 import { MAX_MEETING_DURATION_SECONDS } from "@/modules/premium/entitlements";
 
-const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
-
 import { MeetingStatus, StreamTranscriptItem } from "../types";
 import { meetingsInsertSchema, meetingsUpdateSchema } from "../schemas";
 import { streamChat } from "@/lib/stream-chat";
 
 export const meetingsRouter = createTRPCRouter({
   generateChatToken: protectedProcedure.mutation(async ({ ctx }) => {
-    const token = streamChat.createToken(ctx.auth.user.id);
+    // Best-effort profile sync into Stream Chat. We deliberately DON'T fail the
+    // whole request if this throws: the token below is all the chat client needs
+    // to authenticate, and the Stream React client also upserts the user via
+    // connectUser(userData). Previously a transient upsert error masked behind a
+    // generic message broke chat entirely ("Failed to set up chat"). We log the
+    // real cause so genuine misconfig (e.g. bad keys/expired plan) is visible.
     try {
       await streamChat.upsertUser({
         id: ctx.auth.user.id,
         role: "admin",
       });
     } catch (err) {
-      throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message: "Failed to set up chat. Please try again.",
-        cause: err,
-      });
+      console.error("[generateChatToken] streamChat.upsertUser failed:", err);
     }
 
-    return token;
+    return streamChat.createToken(ctx.auth.user.id);
   }),
-  // Live-caption translation. Called client-side per finalized caption line so
-  // users can read subtitles in any language. Uses gpt-4o-mini (cheap, fast,
-  // near-universal language coverage). Original-language captions cost nothing
-  // extra — only translated lines hit this endpoint.
-  translateCaption: protectedProcedure
-    .input(
-      z.object({
-        text: z.string().min(1).max(2000),
-        // Human-readable target language label, e.g. "Spanish", "Urdu".
-        targetLanguage: z.string().min(1).max(60),
-      }),
-    )
-    .mutation(async ({ input }) => {
-      const { text, targetLanguage } = input;
-      try {
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          temperature: 0,
-          messages: [
-            {
-              role: "system",
-              content:
-                `You are a translation engine. Translate the user's text into ${targetLanguage}. ` +
-                `Output ONLY the translated text — no quotes, no notes, no explanations. ` +
-                `If the text is already in ${targetLanguage}, return it unchanged. ` +
-                `Preserve tone, meaning, names, and punctuation.`,
-            },
-            { role: "user", content: text },
-          ],
-        });
-
-        const translated = completion.choices[0]?.message?.content?.trim() ?? "";
-        return { translated };
-      } catch (err) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Translation failed. Please try again.",
-          cause: err,
-        });
-      }
-    }),
   getTranscript: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ input, ctx }) => {
@@ -247,7 +204,14 @@ export const meetingsRouter = createTRPCRouter({
             type: "realtime",
             model: "gpt-realtime",
             output_modalities: ["audio"],
-            instructions: agent.instructions,
+            // Cost control: spoken (audio) output is the most expensive token
+            // type, so we nudge the agent toward concise replies. This is
+            // appended to — not replacing — the agent's own persona/instructions.
+            instructions:
+              `${agent.instructions}\n\n` +
+              "Keep your spoken replies concise and conversational — answer in a " +
+              "few short sentences and avoid long monologues unless the user " +
+              "explicitly asks for more detail.",
           },
         }),
       });

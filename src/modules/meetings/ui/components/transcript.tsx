@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { format } from "date-fns";
 import { SearchIcon } from "lucide-react";
 import Highlighter from "react-highlight-words";
 import { useQuery } from "@tanstack/react-query";
@@ -12,14 +11,42 @@ import { generateAvatarUri } from "@/lib/avatar";
 
 interface Props {
   meetingId: string;
+  // Wall-clock time the meeting went active (meetings.startedAt). Caption
+  // timestamps are offsets from this exact instant. May arrive as a Date or an
+  // ISO string depending on serialization; `new Date(...)` handles both.
+  startedAt: Date | string | null;
 }
 
-export const Transcript = ({ meetingId }: Props) => {
+// Render a millisecond offset as HH:MM:SS (e.g. 00:05:23). Used to show how far
+// into the meeting each line was spoken.
+const formatElapsed = (ms: number) => {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+};
+
+export const Transcript = ({ meetingId, startedAt }: Props) => {
   const trpc = useTRPC();
   const { data } = useQuery(trpc.meetings.getTranscript.queryOptions({ id: meetingId }))
 
   const [searchQuery, setSearchQuery] = useState("");
-  const filteredData = (data ?? []).filter((item) =>
+  const allItems = data ?? [];
+
+  // start_ts is an absolute epoch timestamp (ms) for realtime-saved transcripts.
+  // Anchor every line to the meeting's actual start (meetings.startedAt) so each
+  // offset is the EXACT moment that line was spoken — not relative to the first
+  // line. If startedAt is somehow missing, fall back to the earliest line so we
+  // still render sane offsets instead of huge epoch numbers.
+  const baseTs = startedAt
+    ? new Date(startedAt).getTime()
+    : allItems.length
+      ? Math.min(...allItems.map((item) => item.start_ts))
+      : 0;
+
+  const filteredData = allItems.filter((item) =>
     item.text.toString().toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -55,10 +82,7 @@ export const Transcript = ({ meetingId }: Props) => {
                   </Avatar>
                   <p className="text-sm font-medium">{item.user.name}</p>
                   <p className="text-sm text-blue-500 font-medium">
-                    {format(
-                      new Date(0, 0, 0, 0, 0, 0, item.start_ts),
-                      "mm:ss"
-                    )}
+                    {formatElapsed(item.start_ts - baseTs)}
                   </p>
                 </div>
                 <Highlighter
